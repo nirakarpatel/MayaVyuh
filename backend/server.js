@@ -257,23 +257,37 @@ app.post('/api/generate', async (req, res) => {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt is required" });
 
-    if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'your_openai_api_key_here') {
-      const response = await openai.images.generate({
-        model: "dall-e-3",
-        prompt: prompt,
-        n: 1,
-        size: "1024x1024",
-      });
-      return res.json({ images: [response.data[0].url] });
+    console.log(`Generating image for prompt: "${prompt}" via Pollinations AI...`);
+    const seed = Math.floor(Math.random() * 1000000);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?seed=${seed}&width=1024&height=1024&nologo=true&model=flux`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Generation API Error: ${response.status}`);
     }
 
-    // Fallback since API key might be missing/invalid
-    const seed = Date.now();
-    const images = [`https://picsum.photos/seed/${seed}/1024/1024`];
-    res.json({ images });
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Upload to S3
+    const extension = 'jpg';
+    const key = `generated/${uuidv4()}.${extension}`;
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: 'image/jpeg',
+    });
+
+    await s3.send(command);
+    const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+
+    return res.json({ images: [fullUrl] });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Image generation failed" });
+    console.error("Image generation error:", err);
+    res.status(500).json({ error: "Image generation failed: " + err.message });
   }
 });
 
