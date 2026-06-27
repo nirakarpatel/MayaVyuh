@@ -4,6 +4,7 @@ import { Shield, User, Users, Crosshair } from "lucide-react";
 import { useSyncState, broadcastEvent, useEventListener } from "./useSync.js";
 import { AdminDashboard, SceneWrapper, GlobalStyles, BG_IMAGES } from "./AdminComponents.jsx";
 import gdgLogo from "./assets/gdg-logo.png";
+const API = import.meta.env.VITE_API_URL || "https://mayavyuh-backend.onrender.com";
 const INIT_TEAMS = [];
 const INIT_EVENT = { started: false, phase: "lobby" };
 
@@ -28,12 +29,39 @@ const RegistrationScreen = ({ onRegister }) => {
   const [teamName, setTeamName] = useState("");
   const [p1, setP1] = useState("");
   const [p2, setP2] = useState("");
+  const [registering, setRegistering] = useState(false);
 
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault();
     if (!teamName || !p1 || !p2) return;
-    const teamId = Date.now().toString();
-    onRegister({ id: teamId, name: teamName, player1: p1, player2: p2, status: "active", round: 0 });
+    
+    setRegistering(true);
+    try {
+      const res = await fetch(`${API}/api/game/teams/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ teamName, player1: p1, player2: p2, role: "observer" }) // Use a default role or adjust as needed
+      });
+      const data = await res.json();
+      
+      if (data.success && data.team) {
+        onRegister({ 
+          id: data.team._id, 
+          name: data.team.name, 
+          player1: data.team.observer, 
+          player2: data.team.creator, 
+          status: data.team.status, 
+          round: 0 
+        });
+      } else {
+        alert(data.error || "Registration failed on server.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to connect to backend for registration.");
+    } finally {
+      setRegistering(false);
+    }
   };
 
   return (
@@ -96,8 +124,8 @@ const RegistrationScreen = ({ onRegister }) => {
               />
             </div>
 
-            <button type="submit" className="btn-imperial" style={{ width: "100%", padding: 20, letterSpacing: 4, fontSize: 14, display: "flex", justifyContent: "center", alignItems: "center", gap: 12 }}>
-              INITIALIZE CONNECTION <Crosshair size={16} />
+            <button type="submit" disabled={registering} className="btn-imperial" style={{ width: "100%", padding: 20, letterSpacing: 4, fontSize: 14, display: "flex", justifyContent: "center", alignItems: "center", gap: 12 }}>
+              {registering ? "ENLISTING..." : "INITIALIZE CONNECTION"} <Crosshair size={16} />
             </button>
           </form>
         </motion.div>
@@ -126,7 +154,7 @@ const IntervalScreen = ({ title, message, timeLeft }) => (
   </div>
 );
 
-const RoundDisplay = ({ playerLabel, targetImage, onComplete, roundLabel, storageKey, isPaused, timeLeft, isRoundEnded }) => {
+const RoundDisplay = ({ playerLabel, targetImage, onComplete, roundLabel, storageKey, isPaused, timeLeft, isRoundEnded, teamId }) => {
   const [uploading, setUploading] = useState(false);
   const [uploadedImgUrl, setUploadedImgUrl] = useState(null);
   const [isGeminiLaunched, setIsGeminiLaunched] = useState(false);
@@ -160,13 +188,18 @@ const RoundDisplay = ({ playerLabel, targetImage, onComplete, roundLabel, storag
     setUploading(true);
     const formData = new FormData();
     formData.append("image", file);
+    if (teamId) formData.append("teamId", teamId);
+    if (storageKey) formData.append("round", storageKey.replace('r', ''));
     try {
-      const uploadRes = await fetch("http://localhost:5001/api/upload", { method: "POST", body: formData });
-      const { url } = await uploadRes.json();
-      setUploadedImgUrl("http://localhost:5001" + url);
+      const uploadRes = await fetch(`${API}/api/player/upload-submission`, { method: "POST", body: formData });
+      const data = await uploadRes.json();
+      if (!data.success) {
+        throw new Error(data.error || data.message || "Upload failed");
+      }
+      setUploadedImgUrl(data.url);
     } catch (err) {
       console.error(err);
-      alert("Failed to upload image. Please try again.");
+      alert(err.message || "Failed to upload image. Please try again.");
     } finally {
       setUploading(false);
     }
@@ -179,7 +212,7 @@ const RoundDisplay = ({ playerLabel, targetImage, onComplete, roundLabel, storag
     }
     setVerifying(true);
     try {
-      const res = await fetch("http://localhost:5001/api/verify-gemini", {
+      const res = await fetch(`${API}/api/verify-gemini`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ link: geminiLink })
       });
@@ -415,7 +448,7 @@ const PlayerSection = ({ globalTeams, setGlobalTeams, eventState }) => {
     if (!myTeam) return;
     const fetchSession = async () => {
       try {
-        const res = await fetch('http://localhost:5001/api/game/status');
+        const res = await fetch(`${API}/api/game/status`);
         const data = await res.json();
         if (data.session) setSession(data.session);
       } catch (err) {}
@@ -432,7 +465,7 @@ const PlayerSection = ({ globalTeams, setGlobalTeams, eventState }) => {
       setPhase("lobby");
     }
     else if (s === 'round1_active' && phase === 'lobby') {
-      fetch("http://localhost:5001/api/target-image")
+      fetch(`${API}/api/target-image`)
         .then(r=>r.json())
         .then(d=>{ setTargetImage(d.url); setPhase("r1"); })
         .catch(e=>setPhase("r1"));
@@ -515,16 +548,16 @@ const PlayerSection = ({ globalTeams, setGlobalTeams, eventState }) => {
   const status = session?.status || 'waiting';
 
   if (phase === "lobby") return <LobbyScreen />;
-  if (phase === "r1") return <RoundDisplay storageKey="r1" playerLabel={`PLAYER 1 (${myTeam.player1})`} targetImage={targetImage} roundLabel="ROUND 1: INITIAL CREATION" onComplete={(img, link) => { setR1Img(img); updateTeamStatus({ round: 1, r1Link: link }); setPhase("interval1"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round1_ended'} />;
+  if (phase === "r1") return <RoundDisplay teamId={myTeam.id} storageKey="r1" playerLabel={`PLAYER 1 (${myTeam.player1})`} targetImage={targetImage} roundLabel="ROUND 1: INITIAL CREATION" onComplete={(img, link) => { setR1Img(img); updateTeamStatus({ round: 1, r1Link: link }); setPhase("interval1"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round1_ended'} />;
   if (phase === "interval1") return <IntervalScreen title="VERBAL TRANSFER" message={`PLAYER 1 (${myTeam.player1}), describe the target image to PLAYER 2 (${myTeam.player2}) verbally. Do not show them the screen!`} timeLeft={timeLeft} />;
-  if (phase === "r2") return <RoundDisplay storageKey="r2" playerLabel={`PLAYER 2 (${myTeam.player2})`} targetImage={null} roundLabel="ROUND 2: BLIND RECREATION" onComplete={(img, link) => { setR2Img(img); updateTeamStatus({ round: 2, r2Link: link }); setPhase("wait_for_r3"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round2_ended'} />;
+  if (phase === "r2") return <RoundDisplay teamId={myTeam.id} storageKey="r2" playerLabel={`PLAYER 2 (${myTeam.player2})`} targetImage={null} roundLabel="ROUND 2: BLIND RECREATION" onComplete={(img, link) => { setR2Img(img); updateTeamStatus({ round: 2, r2Link: link }); setPhase("wait_for_r3"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round2_ended'} />;
   if (phase === "wait_for_r3") return <IntervalScreen title="HOLD POSITION" message="AWAITING ADMIN PROTOCOL FOR ROUND 3" timeLeft={timeLeft} />;
-  if (phase === "r3") return <RoundDisplay storageKey="r3" playerLabel={`PLAYER 1 (${myTeam.player1})`} targetImage={r2Img} roundLabel="ROUND 3: REFINEMENT" onComplete={(img, link) => { setR3Img(img); updateTeamStatus({ r3Link: link }); setPhase("select"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round3_ended'} />;
+  if (phase === "r3") return <RoundDisplay teamId={myTeam.id} storageKey="r3" playerLabel={`PLAYER 1 (${myTeam.player1})`} targetImage={r2Img} roundLabel="ROUND 3: REFINEMENT" onComplete={(img, link) => { setR3Img(img); updateTeamStatus({ r3Link: link }); setPhase("select"); }} isPaused={isPaused} timeLeft={timeLeft} isRoundEnded={status === 'round3_ended'} />;
   if (phase === "select") return <SelectionScreen imgR2={r2Img} imgR3={r3Img} onSelect={async (img) => { 
     setFinalImg(img); 
     setPhase("judgment"); 
     try {
-      const res = await fetch("http://localhost:5001/api/similarity", {
+      const res = await fetch(`${API}/api/similarity`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ original_url: targetImage, submitted_url: img })
       });

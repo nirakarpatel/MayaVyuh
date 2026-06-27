@@ -3,6 +3,8 @@ const dns = require('dns');
 // Set DNS servers to Google's public DNS to resolve MongoDB Atlas SRV records reliably
 dns.setServers(['8.8.8.8', '8.8.4.4']);
 
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { v4: uuidv4 } = require('uuid');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -12,31 +14,29 @@ const { OpenAI } = require('openai');
 
 const KeyValue = require('./models/KeyValue');
 const ImageBank = require('./models/ImageBank');
+const Submission = require('./models/Submission');
+const Team = require('./models/Team');
 
 const app = express();
+
+const s3 = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+
+  },
+});
+
 app.use(cors());
 app.use(express.json());
 
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-
-app.use('/uploads', express.static(uploadsDir));
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }
 });
-const upload = multer({ storage });
 
 // OpenAI removed, using Hugging Face Inference API
 
@@ -59,9 +59,92 @@ if (process.env.MONGO_URI) {
   console.warn('WARNING: MONGO_URI is not set. Database features will not work.');
 }
 
-app.post('/api/upload', upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  res.json({ url: `/uploads/${req.file.filename}` });
+app.post('/api/admin/upload-image', upload.array('images'), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, message: "No files uploaded" });
+    }
+
+    const uploadedUrls = [];
+
+    for (const file of req.files) {
+      const fileContent = file.buffer;
+      const extension = file.originalname.split('.').pop().replace(/[^a-zA-Z0-9]/g, '');
+      const key = `reference/${uuidv4()}.${extension}`;
+
+      const command = new PutObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET_NAME,
+        Key: key,
+        Body: fileContent,
+        ContentType: file.mimetype,
+      });
+
+      await s3.send(command);
+
+      const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+      uploadedUrls.push(fullUrl);
+
+      const newImage = new ImageBank({ url: fullUrl });
+      await newImage.save();
+    }
+
+    res.json({
+      success: true,
+      urls: uploadedUrls
+    });
+
+  } catch (err) {
+    console.error("Admin S3 Upload Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to upload image to S3",
+      error: err.message,
+    });
+  }
+});
+
+app.post('/api/player/upload-submission', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No file uploaded" });
+    }
+
+    const { teamId, round } = req.body;
+    if (!teamId || !round) {
+      return res.status(400).json({ success: false, error: "teamId and round are required" });
+    }
+
+    const fileContent = req.file.buffer;
+    const extension = req.file.originalname.split('.').pop().replace(/[^a-zA-Z0-9]/g, '');
+    
+    // Always perfectly organize by team and round
+    const key = `submissions/${teamId}/${round}/${uuidv4()}.${extension}`;
+
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: key,
+      Body: fileContent,
+      ContentType: req.file.mimetype,
+    });
+
+    await s3.send(command);
+
+    const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+
+    const newSubmission = new Submission({
+      team: teamId,
+      round: round,
+      finalImageUrl: fullUrl,
+    });
+    
+    await newSubmission.save();
+
+    res.json({ success: true, url: fullUrl });
+
+  } catch (err) {
+    console.error("Player S3 Upload Error:", err);
+    res.status(500).json({ success: false, error: "Failed to upload image to S3: " + err.message });
+  }
 });
 
 const apiRoutes = require('./routes/api');
@@ -89,11 +172,12 @@ app.get('/api/target-image', async (req, res) => {
     if (images.length === 0) {
       return res.json({ url: 'https://picsum.photos/seed/default/800/800' });
     }
-    const url = images[currentTargetIndex % images.length].url;
+    const storedUrl = images[currentTargetIndex % images.length].url;
     currentTargetIndex = (currentTargetIndex + 1) % images.length;
-    res.json({ url });
-  } catch(err) {
-    res.status(500).json({ error: "Failed to fetch image" });
+
+    res.json({ url: storedUrl });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to fetch image", error: err.message });
   }
 });
 
@@ -102,7 +186,7 @@ app.get('/api/admin/images', async (req, res) => {
     const images = await ImageBank.find();
     res.json(images);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, message: "Failed to fetch images", error: err.message });
   }
 });
 
@@ -119,6 +203,17 @@ app.post('/api/admin/images', async (req, res) => {
 
 app.delete('/api/admin/images/:id', async (req, res) => {
   try {
+    const image = await ImageBank.findById(req.params.id);
+    if (image && image.url && image.url.includes('.amazonaws.com/')) {
+      const key = image.url.split('.amazonaws.com/')[1];
+      if (key) {
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: process.env.AWS_S3_BUCKET_NAME,
+          Key: key
+        });
+        await s3.send(deleteCommand).catch(err => console.error("S3 Delete Error:", err));
+      }
+    }
     await ImageBank.findByIdAndDelete(req.params.id);
     res.json({ success: true });
   } catch (err) {
@@ -129,11 +224,11 @@ app.delete('/api/admin/images/:id', async (req, res) => {
 app.post('/api/similarity', async (req, res) => {
   try {
     const { original_url, submitted_url } = req.body;
-    const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+    const aiServiceUrl = process.env.AI_SERVICE_URL || "http://localhost:8000";
     const response = await fetch(`${aiServiceUrl}/api/similarity`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ original_url, submitted_url })
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ original_url, submitted_url })
     });
     if (!response.ok) {
       throw new Error(`AI service returned status: ${response.status}`);
@@ -150,25 +245,35 @@ app.post('/api/generate', async (req, res) => {
   try {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt is required" });
-    
-      console.log(`Generating image for prompt: "${prompt}" via Pollinations AI...`);
-      const seed = Math.floor(Math.random() * 1000000);
-      const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?seed=${seed}&width=1024&height=1024&nologo=true&model=flux`;
-      
-      const response = await fetch(url);
 
-      if (!response.ok) {
-        throw new Error(`Generation API Error: ${response.status}`);
-      }
+    console.log(`Generating image for prompt: "${prompt}" via Pollinations AI...`);
+    const seed = Math.floor(Math.random() * 1000000);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?seed=${seed}&width=1024&height=1024&nologo=true&model=flux`;
 
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      
-      const filename = `${Date.now()}-gen.jpg`;
-      const filepath = path.join(uploadsDir, filename);
-      fs.writeFileSync(filepath, buffer);
+    const response = await fetch(url);
 
-      return res.json({ images: [`/uploads/${filename}`] });
+    if (!response.ok) {
+      throw new Error(`Generation API Error: ${response.status}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Upload to S3
+    const extension = 'jpg';
+    const key = `generated/${uuidv4()}.${extension}`;
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: 'image/jpeg',
+    });
+
+    await s3.send(command);
+    const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+
+    return res.json({ images: [fullUrl] });
+
   } catch (err) {
     console.error("Image generation error:", err);
     res.status(500).json({ error: "Image generation failed: " + err.message });
@@ -260,7 +365,7 @@ io.on('connection', async (socket) => {
       initialState[item.key] = item.value;
     });
     socket.emit('initialData', initialState);
-  } catch(e) {
+  } catch (e) {
     console.log("Error fetching KeyValue on connection:", e.message);
   }
 
@@ -274,7 +379,7 @@ io.on('connection', async (socket) => {
   socket.on('anti_cheat_violation', async (data) => {
     // data = { teamId, type: 'tab_switch' | 'fullscreen_exit' }
     const Team = require('./models/Team');
-    if(data.teamId) {
+    if (data.teamId) {
       const update = data.type === 'tab_switch' ? { $inc: { tabSwitchCount: 1, warnings: 1 } } : { $inc: { fullscreenExits: 1, warnings: 1 } };
       await Team.findByIdAndUpdate(data.teamId, update);
       io.emit('admin_alert', { teamId: data.teamId, type: data.type, message: `Violation detected: ${data.type}` });

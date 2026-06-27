@@ -10,6 +10,7 @@ import bg4 from "./assets/bg-4.jpg";
 import bg5 from "./assets/bg-5.jpg";
 
 export const BG_IMAGES = [bg1, bg2, bg3, bg4, bg5];
+const API = import.meta.env.VITE_API_URL || "https://mayavyuh-backend.onrender.com";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
@@ -586,33 +587,41 @@ const ImageVaultSection = () => {
   useEffect(() => { fetchImages(); }, []);
   const fetchImages = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/images`);
+      const res = await fetch(`${API}/api/admin/images`);
       const data = await res.json();
-      setImages(data);
-    } catch(err) { console.error(err); }
+      if (Array.isArray(data)) {
+        setImages(data);
+      } else {
+        console.error("Backend error:", data);
+        setImages([]);
+      }
+    } catch(err) { console.error(err); setImages([]); }
   };
 
   const handleUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    if (loading) return; // Prevent double trigger
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
     setLoading(true);
     const formData = new FormData();
-    formData.append("image", file);
+    for (let i = 0; i < files.length; i++) {
+      formData.append("images", files[i]);
+    }
+    
     try {
-      const uploadRes = await fetch(`${API_URL}/api/upload`, { method: "POST", body: formData });
-      const { url } = await uploadRes.json();
-      await fetch(`${API_URL}/api/admin/images`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: API_URL + url }),
-      });
+      await fetch(`${API}/api/admin/upload-image`, { method: "POST", body: formData });
       fetchImages();
     } catch (err) { console.error(err); } 
-    finally { setLoading(false); }
+    finally { 
+      setLoading(false); 
+      e.target.value = null; // Clear input to prevent stuck state
+    }
   };
 
   const handleDelete = async (id) => {
     try {
-      await fetch(`${API_URL}/api/admin/images/${id}`, { method: 'DELETE' });
+      await fetch(`${API}/api/admin/images/${id}`, { method: 'DELETE' });
       setImages(images.filter(img => img._id !== id));
     } catch(err) { console.error(err); }
   };
@@ -624,7 +633,7 @@ const ImageVaultSection = () => {
         <div style={{ display: "flex", gap: 16 }}>
           <label className="btn-imperial" style={{ padding: "12px 32px", fontSize: 12, letterSpacing: 2 }}>
             {loading ? "UPLOADING..." : "UPLOAD ARTIFACT"}
-            <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} disabled={loading} />
+            <input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleUpload} disabled={loading} />
           </label>
         </div>
       </div>
@@ -661,7 +670,7 @@ export const AdminDashboard = ({ teams, setTeams, eventState, setEventState }) =
 
   const fetchSession = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/game/status`);
+      const res = await fetch(`${API}/api/game/status`);
       const data = await res.json();
       if (data.session) setSession(data.session);
     } catch (err) { console.error(err); }
@@ -692,7 +701,7 @@ export const AdminDashboard = ({ teams, setTeams, eventState, setEventState }) =
     setLoading(true);
     try {
       const duration = round ? durations[round] : undefined;
-      await fetch(`${API_URL}/api/game/start`, {
+      await fetch(`${API}/api/game/start`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, round, duration })
       });
