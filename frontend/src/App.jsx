@@ -51,7 +51,7 @@ const RegistrationScreen = ({ onRegister }) => {
           player1: data.team.observer, 
           player2: data.team.creator, 
           status: data.team.status, 
-          round: 0 
+          round: data.team.round
         });
       } else {
         alert(data.error || "Registration failed on server.");
