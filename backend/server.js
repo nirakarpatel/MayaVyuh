@@ -1,7 +1,9 @@
 require('dotenv').config();
 const dns = require('dns');
-// Set DNS servers to Google's public DNS to resolve MongoDB Atlas SRV records reliably
-dns.setServers(['8.8.8.8', '8.8.4.4']);
+// Set DNS servers to Google's public DNS to resolve MongoDB Atlas SRV records reliably locally
+if (!process.env.RENDER) {
+  dns.setServers(['8.8.8.8', '8.8.4.4']);
+}
 
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { v4: uuidv4 } = require('uuid');
