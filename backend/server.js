@@ -1,3 +1,4 @@
+/* eslint-disable */
 require('dotenv').config();
 
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
@@ -88,7 +89,7 @@ app.post('/api/admin/upload-image', upload.array('images'), async (req, res) => 
       const key = `reference/${filename}`;
 
       const command = new PutObjectCommand({
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
+        Bucket: (process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name),
         Key: key,
         Body: fileContent,
         ContentType: file.mimetype,
@@ -96,7 +97,7 @@ app.post('/api/admin/upload-image', upload.array('images'), async (req, res) => 
 
       await s3.send(command);
 
-      const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+      const fullUrl = `https://${(process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name)}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
       uploadedUrls.push(fullUrl);
 
       const newImage = new ImageBank({ 
@@ -148,7 +149,7 @@ app.post('/api/player/upload-submission', upload.single('image'), async (req, re
     const key = `submissions/${sanitizedTeamName}/round${round}.${extension}`;
 
     const command = new PutObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Bucket: (process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name),
       Key: key,
       Body: fileContent,
       ContentType: req.file.mimetype,
@@ -156,7 +157,7 @@ app.post('/api/player/upload-submission', upload.single('image'), async (req, re
 
     await s3.send(command);
 
-    const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    const fullUrl = `https://${(process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name)}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 
     await Submission.findOneAndUpdate(
       { team: teamId, round: round },
@@ -173,7 +174,7 @@ app.post('/api/player/upload-submission', upload.single('image'), async (req, re
 });
 
 const apiRoutes = require('./routes/api');
-app.use('/api/game', apiRoutes);
+app.use('/api', apiRoutes);
 
 const usedGeminiLinks = new Set();
 
@@ -211,19 +212,17 @@ app.get('/api/target-image', async (req, res) => {
 
     if (team) {
       if (currentRound === 1) {
-        const assignedImage = await ImageBank.findOne({ teamNumber: team.teamNumber });
-        if (assignedImage) targetUrl = assignedImage.url;
+        const allImages = await ImageBank.find().sort({ teamNumber: 1 });
+        if (allImages.length > 0) {
+          const idx = (team.teamNumber - 1) % allImages.length;
+          targetUrl = allImages[idx].url;
+        }
       } else if (currentRound === 2) {
         const submission = await Submission.findOne({ team: team._id, round: 1 });
         if (submission && submission.finalImageUrl) targetUrl = submission.finalImageUrl;
       } else if (currentRound >= 3) {
         const submission = await Submission.findOne({ team: team._id, round: 2 });
         if (submission && submission.finalImageUrl) targetUrl = submission.finalImageUrl;
-      }
-      
-      if (!targetUrl && currentRound === 1) {
-        const assignedImage = await ImageBank.findOne({ teamNumber: team.teamNumber });
-        if (assignedImage) targetUrl = assignedImage.url;
       }
     }
 
@@ -265,7 +264,7 @@ app.delete('/api/admin/images/:id', async (req, res) => {
       const key = image.url.split('.amazonaws.com/')[1];
       if (key) {
         const deleteCommand = new DeleteObjectCommand({
-          Bucket: process.env.AWS_S3_BUCKET_NAME,
+          Bucket: (process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name),
           Key: key
         });
         await s3.send(deleteCommand).catch(err => console.error("S3 Delete Error:", err));
@@ -342,14 +341,14 @@ app.post('/api/generate', async (req, res) => {
     const extension = 'jpg';
     const key = `generated/${uuidv4()}.${extension}`;
     const command = new PutObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Bucket: (process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name),
       Key: key,
       Body: buffer,
       ContentType: 'image/jpeg',
     });
 
     await s3.send(command);
-    const fullUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    const fullUrl = `https://${(process.env.AWS_S3_BUCKET_NAME || process.env.AWS_S3_Bucket_name)}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 
     return res.json({ images: [fullUrl] });
 
@@ -484,3 +483,5 @@ io.on('connection', async (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
+
+
