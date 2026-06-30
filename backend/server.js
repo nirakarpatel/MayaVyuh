@@ -75,7 +75,10 @@ app.post('/api/admin/upload-image', upload.array('images'), async (req, res) => 
 
     for (const file of req.files) {
       const fileContent = file.buffer;
-      const extension = file.originalname.split('.').pop().replace(/[^a-zA-Z0-9]/g, '');
+      const mimeToExt = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png' };
+      let rawExt = file.originalname.includes('.') ? file.originalname.split('.').pop() : '';
+      let extension = mimeToExt[file.mimetype] || rawExt.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'png';
+      if (extension === 'jpeg') extension = 'jpg';
       const filename = `team_${nextTeamNumber}.${extension}`;
       const key = `reference/${filename}`;
 
